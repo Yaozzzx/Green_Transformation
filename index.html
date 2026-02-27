@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Street Tree Planting Assistant (Gowanus MVP)</title>
+
+  <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+
+  <style>
+    body { margin: 0; display: flex; font-family: sans-serif; background: #111; color: #fff; }
+    #map { height: 100vh; width: 74%; }
+    #sidebar { width: 26%; padding: 16px; box-sizing: border-box; overflow: auto; }
+    .card { background: #1f1f1f; border-radius: 10px; padding: 12px; margin-bottom: 10px; border: 1px solid #2a2a2a; }
+    .row { display: flex; gap: 10px; align-items: center; }
+    .row > * { flex: 1; }
+    label { font-size: 12px; opacity: 0.9; display: block; margin-bottom: 4px; }
+    input, select { width: 100%; padding: 8px; border-radius: 8px; border: 1px solid #333; background: #121212; color: #fff; }
+    button { padding: 8px 10px; border-radius: 10px; border: 0; cursor: pointer; font-weight: 700; }
+    button.primary { background: #4CAF50; color: #0b0b0b; }
+    button.danger { background: #e74c3c; color: #fff; }
+    button.ghost { background: #2a2a2a; color: #fff; }
+    small { opacity: 0.85; }
+
+    /* Mapbox popup content */
+    .popup { color: #111; font-size: 13px; }
+    .popup h3 { margin: 0 0 8px 0; font-size: 14px; }
+    .popup .meta { margin: 4px 0; }
+    .popup .actions { display: flex; gap: 8px; margin-top: 10px; }
+    .popup a { text-decoration: none; }
+
+    /* Planted tree marker */
+    .planted-marker {
+      font-size: 26px;
+      line-height: 26px;
+      cursor: grab;
+      filter: drop-shadow(0 2px 2px rgba(0,0,0,0.6));
+      transform: translateY(-10px);
+      user-select: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="map"></div>
+
+  <div id="sidebar">
+    <div class="card">
+      <h2 style="margin:0 0 8px 0;">Street Tree Planting Assistant</h2>
+      <small>
+        Gowanus MVP: existing 2015 trees (clickable + removable) + interactive planting (drag/delete) + simple benefit modeling + projections.
+      </small>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div>
+          <label>Filter: Health</label>
+          <select id="healthFilter">
+            <option value="ALL">All</option>
+            <option value="Good">Good</option>
+            <option value="Fair">Fair</option>
+            <option value="Poor">Poor</option>
+          </select>
+        </div>
+        <div>
+          <label>Filter: Min DBH (in)</label>
+          <input id="minDbhFilter" type="number" value="0" min="0" step="1" />
+        </div>
+      </div>
+      <div style="margin-top:10px" class="row">
+        <button class="ghost" id="reloadExisting">Reload Existing Trees</button>
+        <button class="ghost" id="clearRemoved">Reset Removed (refresh)</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 10px 0;">Scenario Projection</h3>
+      <div class="row">
+        <div>
+          <label>Horizon</label>
+          <select id="horizon">
+            <option value="5">5 years</option>
+            <option value="10" selected>10 years</option>
+            <option value="15">15 years</option>
+            <option value="20">20 years</option>
+          </select>
+        </div>
+        <div style="flex:0.6">
+          <label>&nbsp;</label>
+          <button class="primary" id="runProjection">Run</button>
+        </div>
+      </div>
+      <div id="projectionOut" style="margin-top:10px; font-size:13px; opacity:0.95;"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 10px 0;">How to use</h3>
+      <small>
+        • Click a green circle to inspect an existing tree, then remove it if needed.<br/>
+        • Click on the map (empty space) to plant a 🌳 (editable + draggable + deletable).<br/>
+        • This MVP uses simplified benefit formulas (placeholders) — swap to USDA/i-Tree coefficients later.
+      </small>
+    </div>
+  </div>
+
+  <script>
+    // ----------------------------
+    // Map init
+    // ----------------------------
+    mapboxgl.accessToken = 'Add your Mapbox access token here';
+
+    const CENTER = [-73.991, 40.676];
+
+    const map = new mapboxgl.Map({
+      container: "map",
+      style: "mapbox://styles/mapbox/satellite-streets-v12",
+      center: CENTER,
+      zoom: 16,
+      pitch: 45
+    });
+
+    // ----------------------------
+    // State
+    // ----------------------------
+    let speciesList = [];
+    let plantedMarkers = new Map(); // tree_id -> { marker, data }
+
+    const qs = (id) => document.getElementById(id);
+
+    // ----------------------------
+    // Helpers
+    // ----------------------------
+    function safe(v) { return (v === undefined || v === null || v === "") ? "N/A" : String(v); }
+
+    function fmt(n, digits=1) {
+      if (!Number.isFinite(n)) return "N/A";
+      return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+    }
+
+    async function api(path, opts) {
+      const res = await fetch(path, opts);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`${res.status} ${res.statusText}: ${text}`);
+      }
+      return res.json();
+    }
+
+    // ----------------------------
+    // Existing trees layer (GeoJSON source + circle layer)
+    // ----------------------------
+    async function loadExistingTrees() {
+      const health = qs("healthFilter").value;
+      const minDbh = Number(qs("minDbhFilter").value || 0);
+
+      const geojson = await api("/api/existing-trees");
+
+      // Apply client-side filters (fast enough for neighborhood scale)
+      geojson.features = geojson.features.filter(f => {
+        const h = f.properties.health;
+        const dbh = Number(f.properties.tree_dbh || 0);
+        if (health !== "ALL" && h !== health) return false;
+        if (dbh < minDbh) return false;
+        return true;
+      });
+
+      if (map.getSource("existing")) {
+        map.getSource("existing").setData(geojson);
+      } else {
+        map.addSource("existing", { type: "geojson", data: geojson });
+
+        map.addLayer({
+          id: "existing-layer",
+          type: "circle",
+          source: "existing",
+          paint: {
+            "circle-radius": 4,
+            "circle-color": "#2ecc71",
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": 1,
+            "circle-opacity": 0.9
+          }
+        });
+
+        map.on("mouseenter", "existing-layer", () => map.getCanvas().style.cursor = "pointer");
+        map.on("mouseleave", "existing-layer", () => map.getCanvas().style.cursor = "");
+
+        map.on("click", "existing-layer", (e) => onClickExistingTree(e));
+      }
+    }
+
+    async function onClickExistingTree(e) {
+      const f = e.features && e.features[0];
+      if (!f) return;
+
+      const props = f.properties || {};
+      const coords = f.geometry.coordinates.slice();
+      const treeId = safe(props.tree_id);
+
+      // Reference link pattern (may not match Parks Tree Map IDs 1:1; using tree_id best-effort)
+      const parksLink = `https://tree-map.nycgovparks.org/tree-map/tree/${encodeURIComponent(treeId)}`;
+
+      const html = `
+        <div class="popup">
+          <h3>${safe(props.spc_common)}</h3>
+          <div class="meta"><b>Tree ID:</b> ${treeId}</div>
+          <div class="meta"><b>Latin:</b> ${safe(props.spc_latin)}</div>
+          <div class="meta"><b>Health:</b> ${safe(props.health)} | <b>Status:</b> ${safe(props.status)}</div>
+          <div class="meta"><b>DBH (in):</b> ${safe(props.tree_dbh)} | <b>Curb:</b> ${safe(props.curb_loc)}</div>
+          <div class="meta"><b>Steward:</b> ${safe(props.steward)}</div>
+          <div class="meta"><b>ZIP:</b> ${safe(props.zipcode)} | <b>NTA:</b> ${safe(props.nta)}</div>
+          <div class="actions">
+            <button class="danger" id="rm-existing">Remove</button>
+            <a class="ghost" target="_blank" rel="noreferrer" href="${parksLink}">
+              <button class="ghost">Open Tree Map</button>
+            </a>
+          </div>
+        </div>
+      `;
+
+      const popup = new mapboxgl.Popup({ offset: 12 })
+        .setLngLat(coords)
+        .setHTML(html)
+        .addTo(map);
+
+      popup.on("open", () => {
+        const btn = popup.getElement().querySelector("#rm-existing");
+        if (btn) {
+          btn.addEventListener("click", async () => {
+            try {
+              await api(`/api/existing-trees/${encodeURIComponent(treeId)}/remove`, { method: "POST" });
+              popup.remove();
+              await loadExistingTrees();
+            } catch (err) {
+              console.error(err);
+              alert("Failed to remove existing tree (see console).");
+            }
+          }, { once: true });
+        }
+      });
+    }
+
+    // ----------------------------
+    // Species + planted trees
+    // ----------------------------
+    async function loadSpecies() {
+      const out = await api("/api/species");
+      speciesList = out.species || [];
+    }
+
+    function plantedPopupHTML(tree) {
+      const s = speciesList.find(x => x.species_id === tree.species_id) || {};
+      const b = tree.benefits || {};
+
+      const options = speciesList.map(sp =>
+        `<option value="${sp.species_id}" ${sp.species_id === tree.species_id ? "selected" : ""}>
+          ${sp.common}
+        </option>`
+      ).join("");
+
+      return `
+        <div class="popup">
+          <h3>Planted Tree</h3>
+
+          <div class="meta"><b>Species:</b> ${safe(s.common)}</div>
+
+          <div style="margin-top:8px">
+            <label>Species</label>
+            <select id="p-species">${options}</select>
+          </div>
+
+          <div class="row" style="margin-top:8px">
+            <div>
+              <label>DBH (in)</label>
+              <input id="p-dbh" type="number" min="0" step="0.5" value="${safe(tree.dbh_in)}" />
+            </div>
+            <div>
+              <label>Planting Year</label>
+              <input id="p-year" type="number" min="1900" step="1" value="${safe(tree.planting_year)}" />
+            </div>
+          </div>
+
+          <div class="meta" style="margin-top:8px">
+            <b>Canopy radius:</b> ${fmt(Number(b.canopy_radius_m), 2)} m
+            &nbsp;|&nbsp; <b>Canopy area:</b> ${fmt(Number(b.canopy_area_m2), 0)} m²
+          </div>
+          <div class="meta"><b>Carbon:</b> ${fmt(Number(b.carbon_kg_per_year), 1)} kg/yr</div>
+          <div class="meta"><b>Stormwater:</b> ${fmt(Number(b.stormwater_l_per_year), 0)} L/yr</div>
+          <div class="meta"><b>Pollution removal:</b> ${fmt(Number(b.pollution_g_per_year), 0)} g/yr</div>
+
+          <div class="actions">
+            <button class="primary" id="p-save">Save</button>
+            <button class="danger" id="p-delete">Delete</button>
+          </div>
+
+          <small>Tip: drag the 🌳 marker to reposition it.</small>
+        </div>
+      `;
+    }
+
+    function addPlantedMarker(tree) {
+      // Create DOM marker
+      const el = document.createElement("div");
+      el.className = "planted-marker";
+      el.textContent = "🌳";
+
+      const marker = new mapboxgl.Marker({ element: el, draggable: true })
+        .setLngLat([tree.lon, tree.lat])
+        .addTo(map);
+
+      marker.on("dragend", async () => {
+        const lngLat = marker.getLngLat();
+        try {
+          const out = await api(`/api/scenario/trees/${encodeURIComponent(tree.id)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ lon: lngLat.lng, lat: lngLat.lat })
+          });
+          plantedMarkers.get(tree.id).data = out.tree;
+        } catch (err) {
+          console.error(err);
+          alert("Failed to update position.");
+        }
+      });
+
+      el.addEventListener("click", () => openPlantedPopup(tree.id));
+
+      plantedMarkers.set(tree.id, { marker, data: tree });
+    }
+
+    function openPlantedPopup(treeId) {
+      const entry = plantedMarkers.get(treeId);
+      if (!entry) return;
+
+      const tree = entry.data;
+      const lngLat = entry.marker.getLngLat();
+
+      const popup = new mapboxgl.Popup({ offset: 12 })
+        .setLngLat([lngLat.lng, lngLat.lat])
+        .setHTML(plantedPopupHTML(tree))
+        .addTo(map);
+
+      popup.on("open", () => {
+        const root = popup.getElement();
+
+        const speciesSel = root.querySelector("#p-species");
+        const dbhInput = root.querySelector("#p-dbh");
+        const yearInput = root.querySelector("#p-year");
+
+        const saveBtn = root.querySelector("#p-save");
+        const delBtn = root.querySelector("#p-delete");
+
+        saveBtn?.addEventListener("click", async () => {
+          try {
+            const out = await api(`/api/scenario/trees/${encodeURIComponent(treeId)}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                species_id: speciesSel.value,
+                dbh_in: Number(dbhInput.value),
+                planting_year: Number(yearInput.value)
+              })
+            });
+            // update local
+            entry.data = out.tree;
+            popup.setHTML(plantedPopupHTML(out.tree)); // refresh popup
+          } catch (err) {
+            console.error(err);
+            alert("Failed to save planted tree.");
+          }
+        }, { once: true });
+
+        delBtn?.addEventListener("click", async () => {
+          try {
+            await api(`/api/scenario/trees/${encodeURIComponent(treeId)}`, { method: "DELETE" });
+            entry.marker.remove();
+            plantedMarkers.delete(treeId);
+            popup.remove();
+          } catch (err) {
+            console.error(err);
+            alert("Failed to delete planted tree.");
+          }
+        }, { once: true });
+      });
+    }
+
+    async function loadScenario() {
+      const out = await api("/api/scenario");
+      (out.planted_trees || []).forEach(addPlantedMarker);
+    }
+
+    // Plant on map click (avoid planting if clicking an existing tree circle)
+    async function onMapClick(e) {
+      const hitExisting = map.queryRenderedFeatures(e.point, { layers: ["existing-layer"] });
+      if (hitExisting && hitExisting.length) return;
+
+      // Create on backend
+      try {
+        const out = await api("/api/scenario/trees", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lon: e.lngLat.lng,
+            lat: e.lngLat.lat,
+            species_id: "red_maple",
+            dbh_in: 2.0,
+            planting_year: new Date().getFullYear()
+          })
+        });
+
+        addPlantedMarker(out.tree);
+        openPlantedPopup(out.tree.id);
+      } catch (err) {
+        console.error(err);
+        alert("Failed to plant tree.");
+      }
+    }
+
+    // ----------------------------
+    // Projection
+    // ----------------------------
+    async function runProjection() {
+      const horizon = Number(qs("horizon").value);
+      const out = await api(`/api/scenario/projection?horizon=${encodeURIComponent(horizon)}`);
+
+      const t = out.total;
+      qs("projectionOut").innerHTML = `
+        <div><b>${out.horizon_years}y projected annual totals (planted trees only)</b></div>
+        <div style="margin-top:6px"><b>Carbon:</b> ${fmt(t.carbon_kg_per_year, 1)} kg/yr</div>
+        <div><b>Stormwater:</b> ${fmt(t.stormwater_l_per_year, 0)} L/yr</div>
+        <div><b>Pollution removed:</b> ${fmt(t.pollution_g_per_year, 0)} g/yr</div>
+        <div><b>Total canopy area:</b> ${fmt(t.canopy_area_m2, 0)} m²</div>
+      `;
+    }
+
+    // ----------------------------
+    // Init
+    // ----------------------------
+    map.on("load", async () => {
+      // 3D buildings
+      try {
+        map.addLayer({
+          id: "3d-buildings",
+          source: "composite",
+          "source-layer": "building",
+          filter: ["==", "extrude", "true"],
+          type: "fill-extrusion",
+          paint: {
+            "fill-extrusion-color": "#aaa",
+            "fill-extrusion-height": ["get", "height"],
+            "fill-extrusion-opacity": 0.4
+          }
+        });
+      } catch (e) {
+        console.warn("3D buildings layer not available:", e);
+      }
+
+      await loadSpecies();
+      await loadExistingTrees();
+      await loadScenario();
+
+      map.on("click", onMapClick);
+
+      qs("reloadExisting").addEventListener("click", loadExistingTrees);
+      qs("healthFilter").addEventListener("change", loadExistingTrees);
+      qs("minDbhFilter").addEventListener("change", loadExistingTrees);
+
+      qs("runProjection").addEventListener("click", runProjection);
+
+      qs("clearRemoved").addEventListener("click", () => {
+        // MVP: easiest reset is just refresh the page, since removed state is in backend memory.
+        // In production you'd add an API to clear removed.
+        location.reload();
+      });
+    });
+  </script>
+</body>
+</html>
