@@ -39,11 +39,61 @@
       transform: translateY(-10px);
       user-select: none;
     }
+
+    /* Map mode toolbar (pan vs plant) */
+    #map { position: relative; }
+    .map-toolbar {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 10;
+      display: flex;
+      gap: 4px;
+      background: #1f1f1f;
+      padding: 6px;
+      border-radius: 10px;
+      border: 1px solid #2a2a2a;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    }
+    .toolbar-btn {
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      border: 1px solid #333;
+      background: #2a2a2a;
+      color: #fff;
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .toolbar-btn:hover {
+      background: #3a3a3a;
+      border-color: #444;
+    }
+    .toolbar-btn.active {
+      background: #4CAF50;
+      border-color: #66BB6A;
+      color: #0b0b0b;
+    }
+
+    /* Crosshair in plant mode (JS sets pointer when hovering existing trees) */
+    #map.map-mode-plant .mapboxgl-canvas-container,
+    #map.map-mode-plant .mapboxgl-canvas {
+      cursor: crosshair;
+    }
   </style>
 </head>
 
 <body>
-  <div id="map"></div>
+  <div id="map">
+    <div id="map-mode-toolbar" class="map-toolbar" title="Switch between pan/select and plant mode">
+      <button type="button" id="mode-pan" class="toolbar-btn active" title="Pan map / click trees to inspect">✋</button>
+      <button type="button" id="mode-plant" class="toolbar-btn" title="Click map to plant a tree">🌳</button>
+    </div>
+  </div>
 
   <div id="sidebar">
     <div class="card">
@@ -98,8 +148,10 @@
     <div class="card">
       <h3 style="margin:0 0 10px 0;">How to use</h3>
       <small>
-        • Click a green circle to inspect an existing tree, then remove it if needed.<br/>
-        • Click on the map (empty space) to plant a 🌳 (editable + draggable + deletable).<br/>
+        • <b>✋ Pan mode</b> (default): drag map, click green circles to inspect/remove existing trees.<br/>
+        • <b>🌳 Plant mode</b>: click on empty map to plant a tree (editable, draggable, deletable).<br/>
+        • Toggle modes with the toolbar on the map (top-left).<br/>
+        • Species selection follows Gowanus guidelines: native, flood-tolerant species recommended; avoid overused species for diversity.<br/>
         • This MVP uses simplified benefit formulas (placeholders) — swap to USDA/i-Tree coefficients later.
       </small>
     </div>
@@ -109,7 +161,7 @@
     // ----------------------------
     // Map init
     // ----------------------------
-    mapboxgl.accessToken = 'Add your Mapbox access token here';
+    mapboxgl.accessToken = 'pk.eyJ1IjoiODU4MzQ0MzgyNSIsImEiOiJjbW04ajFzYnMwaGowMnBvcG9uN3JuZmVpIn0.-FqOX5e6ZGkkIB5l17Qw-w';
 
     const CENTER = [-73.991, 40.676];
 
@@ -126,6 +178,7 @@
     // ----------------------------
     let speciesList = [];
     let plantedMarkers = new Map(); // tree_id -> { marker, data }
+    let mapMode = "pan"; // "pan" = drag/click trees only; "plant" = click to plant
 
     const qs = (id) => document.getElementById(id);
 
@@ -184,8 +237,15 @@
           }
         });
 
-        map.on("mouseenter", "existing-layer", () => map.getCanvas().style.cursor = "pointer");
-        map.on("mouseleave", "existing-layer", () => map.getCanvas().style.cursor = "");
+        map.on("mouseenter", "existing-layer", () => {
+          map.getCanvas().style.cursor = "pointer";
+          if (map.getCanvas().parentElement) map.getCanvas().parentElement.style.cursor = "pointer";
+        });
+        map.on("mouseleave", "existing-layer", () => {
+          const c = mapMode === "plant" ? "crosshair" : "";
+          map.getCanvas().style.cursor = c;
+          if (map.getCanvas().parentElement) map.getCanvas().parentElement.style.cursor = c;
+        });
 
         map.on("click", "existing-layer", (e) => onClickExistingTree(e));
       }
@@ -250,15 +310,26 @@
       speciesList = out.species || [];
     }
 
+    function speciesOptionLabel(sp) {
+      if (sp.gowanus_recommended) return `${sp.common} — Recommended`;
+      if (sp.gowanus_avoid) return `${sp.common} — Avoid in Gowanus`;
+      return sp.common;
+    }
+
     function plantedPopupHTML(tree) {
       const s = speciesList.find(x => x.species_id === tree.species_id) || {};
       const b = tree.benefits || {};
+      const showAvoidWarning = !!s.gowanus_avoid;
 
       const options = speciesList.map(sp =>
         `<option value="${sp.species_id}" ${sp.species_id === tree.species_id ? "selected" : ""}>
-          ${sp.common}
+          ${speciesOptionLabel(sp)}
         </option>`
       ).join("");
+
+      const avoidWarningHtml = showAvoidWarning
+        ? `<div id="p-avoid-warning" class="avoid-warning" style="margin-top:8px; padding:8px; background:#f9e79f; color:#7d6608; border-radius:6px; font-size:12px;">该物种在 Gowanus 区域建议不再新种，以促进树种多样性。</div>`
+        : `<div id="p-avoid-warning" class="avoid-warning" style="display:none; margin-top:8px; padding:8px; background:#f9e79f; color:#7d6608; border-radius:6px; font-size:12px;">该物种在 Gowanus 区域建议不再新种，以促进树种多样性。</div>`;
 
       return `
         <div class="popup">
@@ -270,6 +341,7 @@
             <label>Species</label>
             <select id="p-species">${options}</select>
           </div>
+          ${avoidWarningHtml}
 
           <div class="row" style="margin-top:8px">
             <div>
@@ -346,11 +418,18 @@
         const root = popup.getElement();
 
         const speciesSel = root.querySelector("#p-species");
+        const avoidWarning = root.querySelector("#p-avoid-warning");
         const dbhInput = root.querySelector("#p-dbh");
         const yearInput = root.querySelector("#p-year");
 
         const saveBtn = root.querySelector("#p-save");
         const delBtn = root.querySelector("#p-delete");
+
+        function updateAvoidWarning() {
+          const sp = speciesList.find(x => x.species_id === speciesSel.value);
+          if (avoidWarning) avoidWarning.style.display = sp?.gowanus_avoid ? "block" : "none";
+        }
+        speciesSel?.addEventListener("change", updateAvoidWarning);
 
         saveBtn?.addEventListener("click", async () => {
           try {
@@ -391,12 +470,15 @@
       (out.planted_trees || []).forEach(addPlantedMarker);
     }
 
-    // Plant on map click (avoid planting if clicking an existing tree circle)
+    // Plant on map click only when in plant mode (avoid planting if clicking an existing tree circle)
     async function onMapClick(e) {
+      if (mapMode !== "plant") return;
+
       const hitExisting = map.queryRenderedFeatures(e.point, { layers: ["existing-layer"] });
       if (hitExisting && hitExisting.length) return;
 
-      // Create on backend
+      // Create on backend (default: first Gowanus-recommended species)
+      const defaultSpeciesId = speciesList.find(s => s.gowanus_recommended)?.species_id || "red_maple";
       try {
         const out = await api("/api/scenario/trees", {
           method: "POST",
@@ -404,7 +486,7 @@
           body: JSON.stringify({
             lon: e.lngLat.lng,
             lat: e.lngLat.lat,
-            species_id: "red_maple",
+            species_id: defaultSpeciesId,
             dbh_in: 2.0,
             planting_year: new Date().getFullYear()
           })
@@ -462,6 +544,21 @@
       await loadScenario();
 
       map.on("click", onMapClick);
+
+      // Map mode: pan (hand) vs plant (tree) — set cursor on container/canvas and toggle CSS class
+      function setMapMode(mode) {
+        mapMode = mode;
+        qs("mode-pan").classList.toggle("active", mode === "pan");
+        qs("mode-plant").classList.toggle("active", mode === "plant");
+        const container = map.getContainer();
+        container.classList.toggle("map-mode-plant", mode === "plant");
+        const c = mode === "plant" ? "crosshair" : "";
+        const canvas = map.getCanvas();
+        canvas.style.cursor = c;
+        if (canvas.parentElement) canvas.parentElement.style.cursor = c;
+      }
+      qs("mode-pan").addEventListener("click", () => setMapMode("pan"));
+      qs("mode-plant").addEventListener("click", () => setMapMode("plant"));
 
       qs("reloadExisting").addEventListener("click", loadExistingTrees);
       qs("healthFilter").addEventListener("change", loadExistingTrees);

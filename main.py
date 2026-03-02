@@ -39,46 +39,67 @@ NYC_TREES_ENDPOINT = "https://data.cityofnewyork.us/resource/uvpi-gqnh.json"
 
 
 # ----------------------------
-# Species library (placeholder)
-# Replace coefficients with USDA/i-Tree calibrated values later.
+# Species library (Gowanus guidelines)
+# gowanus_recommended: Central Forestry prioritized for Gowanus (native, flood-tolerant)
+# gowanus_avoid: avoid specifying for new planting (diversity policy)
+# Coefficients: placeholders — replace with USDA/i-Tree calibrated values later.
 # ----------------------------
+def _species(
+    species_id: str,
+    common: str,
+    latin: str,
+    dbh_growth: float,
+    canopy_k: float,
+    carbon: float,
+    stormwater: float,
+    pollution: float,
+    *,
+    gowanus_recommended: bool = False,
+    gowanus_avoid: bool = False,
+):
+    return {
+        "species_id": species_id,
+        "common": common,
+        "latin": latin,
+        "dbh_growth_in_per_year": dbh_growth,
+        "canopy_k_m_per_in": canopy_k,
+        "carbon_kg_per_in_dbh": carbon,
+        "stormwater_l_per_m2_canopy": stormwater,
+        "pollution_g_per_m2_canopy": pollution,
+        "gowanus_recommended": gowanus_recommended,
+        "gowanus_avoid": gowanus_avoid,
+    }
+
 SPECIES_DB = [
-    {
-        "species_id": "red_maple",
-        "common": "Red Maple",
-        "latin": "Acer rubrum",
-        # DBH growth inches/year (simple)
-        "dbh_growth_in_per_year": 0.35,
-        # canopy radius at maturity ~ k * DBH(in) => meters (rough proxy)
-        "canopy_k_m_per_in": 0.45,
-        # benefit coefficients per year (rough demo scalars)
-        "carbon_kg_per_in_dbh": 3.0,
-        "stormwater_l_per_m2_canopy": 45.0,
-        "pollution_g_per_m2_canopy": 12.0,
-    },
-    {
-        "species_id": "london_plane",
-        "common": "London Plane",
-        "latin": "Platanus × acerifolia",
-        "dbh_growth_in_per_year": 0.50,
-        "canopy_k_m_per_in": 0.55,
-        "carbon_kg_per_in_dbh": 4.2,
-        "stormwater_l_per_m2_canopy": 55.0,
-        "pollution_g_per_m2_canopy": 14.0,
-    },
-    {
-        "species_id": "ginkgo",
-        "common": "Ginkgo",
-        "latin": "Ginkgo biloba",
-        "dbh_growth_in_per_year": 0.25,
-        "canopy_k_m_per_in": 0.35,
-        "carbon_kg_per_in_dbh": 2.2,
-        "stormwater_l_per_m2_canopy": 35.0,
-        "pollution_g_per_m2_canopy": 9.0,
-    },
+    # --- Recommended (13 native, flood-tolerant) ---
+    _species("amelanchier_canadensis", "Serviceberry", "Amelanchier canadensis", 0.25, 0.35, 2.2, 35.0, 9.0, gowanus_recommended=True),
+    _species("celtis_occidentalis", "Hackberry", "Celtis occidentalis", 0.40, 0.50, 3.5, 50.0, 13.0, gowanus_recommended=True),
+    _species("cercis_canadensis", "Redbud", "Cercis canadensis", 0.30, 0.40, 2.5, 40.0, 10.0, gowanus_recommended=True),
+    _species("gymnocladus_dioicus", "Kentucky Coffeetree", "Gymnocladus dioicus", 0.45, 0.55, 4.0, 55.0, 14.0, gowanus_recommended=True),
+    _species("juniperus_virginiana", "Eastern Red Cedar", "Juniperus virginiana", 0.30, 0.35, 2.8, 38.0, 10.0, gowanus_recommended=True),
+    _species("liquidambar_styraciflua", "Sweetgum", "Liquidambar styraciflua", 0.45, 0.50, 3.8, 52.0, 13.0, gowanus_recommended=True),
+    _species("nyssa_sylvatica", "Black Gum", "Nyssa sylvatica", 0.35, 0.45, 3.2, 48.0, 12.0, gowanus_recommended=True),
+    _species("quercus_bicolor", "Swamp White Oak", "Quercus bicolor", 0.40, 0.55, 4.0, 55.0, 14.0, gowanus_recommended=True),
+    _species("quercus_lyrata", "Overcup Oak", "Quercus lyrata", 0.40, 0.55, 4.0, 55.0, 14.0, gowanus_recommended=True),
+    _species("quercus_macrocarpa", "Bur Oak", "Quercus macrocarpa", 0.45, 0.60, 4.2, 58.0, 15.0, gowanus_recommended=True),
+    _species("quercus_muehlenbergii", "Chinkapin Oak", "Quercus muehlenbergii", 0.40, 0.50, 3.8, 52.0, 13.0, gowanus_recommended=True),
+    _species("quercus_rubra", "Northern Red Oak", "Quercus rubra", 0.45, 0.55, 4.0, 55.0, 14.0, gowanus_recommended=True),
+    _species("taxodium_distichum", "Bald Cypress", "Taxodium distichum", 0.50, 0.55, 4.2, 58.0, 15.0, gowanus_recommended=True),
+    # --- Other (neutral) ---
+    _species("red_maple", "Red Maple", "Acer rubrum", 0.35, 0.45, 3.0, 45.0, 12.0),
+    # --- Avoid in Gowanus (5 species) ---
+    _species("london_plane", "London Plane", "Platanus × acerifolia", 0.50, 0.55, 4.2, 55.0, 14.0, gowanus_avoid=True),
+    _species("ginkgo", "Ginkgo", "Ginkgo biloba", 0.25, 0.35, 2.2, 35.0, 9.0, gowanus_avoid=True),
+    _species("gleditsia_triacanthos", "Honey Locust", "Gleditsia triacanthos", 0.45, 0.50, 3.5, 50.0, 13.0, gowanus_avoid=True),
+    _species("quercus_palustris", "Pin Oak", "Quercus palustris", 0.45, 0.55, 4.0, 55.0, 14.0, gowanus_avoid=True),
+    _species("zelkova_serrata", "Japanese Zelkova", "Zelkova serrata", 0.40, 0.50, 3.5, 50.0, 13.0, gowanus_avoid=True),
 ]
 
 SPECIES_BY_ID = {s["species_id"]: s for s in SPECIES_DB}
+DEFAULT_SPECIES_ID = next(
+    (s["species_id"] for s in SPECIES_DB if s.get("gowanus_recommended")),
+    "red_maple",
+)
 
 
 # ----------------------------
@@ -220,7 +241,7 @@ def add_planted_tree(payload: Dict[str, Any]):
     try:
         lon = float(payload["lon"])
         lat = float(payload["lat"])
-        species_id = str(payload.get("species_id", "red_maple"))
+        species_id = str(payload.get("species_id", DEFAULT_SPECIES_ID))
         dbh_in = float(payload.get("dbh_in", 2.0))
         planting_year = int(payload.get("planting_year", 2026))
     except Exception as e:
