@@ -294,8 +294,8 @@ def delete_planted_tree(tree_id: str):
 
 @app.get("/api/scenario/projection")
 def scenario_projection(horizon: int = 10):
-    if horizon not in (5, 10, 15, 20):
-        raise HTTPException(status_code=400, detail="horizon must be one of 5,10,15,20")
+    if not (5 <= horizon <= 20):
+        raise HTTPException(status_code=400, detail="horizon must be between 5 and 20")
 
     total = {
         "carbon_kg_per_year": 0.0,

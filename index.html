@@ -127,20 +127,16 @@
 
     <div class="card">
       <h3 style="margin:0 0 10px 0;">Scenario Projection</h3>
-      <div class="row">
-        <div>
-          <label>Horizon</label>
-          <select id="horizon">
-            <option value="5">5 years</option>
-            <option value="10" selected>10 years</option>
-            <option value="15">15 years</option>
-            <option value="20">20 years</option>
-          </select>
-        </div>
-        <div style="flex:0.6">
-          <label>&nbsp;</label>
-          <button class="primary" id="runProjection">Run</button>
-        </div>
+      <div>
+        <label>Horizon: <span id="horizonValue">10</span> years</label>
+        <input
+          type="range"
+          id="horizon"
+          min="5"
+          max="20"
+          value="10"
+          style="width:92%; margin:6px auto 0; display:block; accent-color:#4CAF50;"
+        />
       </div>
       <div id="projectionOut" style="margin-top:10px; font-size:13px; opacity:0.95;"></div>
     </div>
@@ -148,11 +144,10 @@
     <div class="card">
       <h3 style="margin:0 0 10px 0;">How to use</h3>
       <small>
-        • <b>✋ Pan mode</b> (default): drag map, click green circles to inspect/remove existing trees.<br/>
-        • <b>🌳 Plant mode</b>: click on empty map to plant a tree (editable, draggable, deletable).<br/>
-        • Toggle modes with the toolbar on the map (top-left).<br/>
+        • <b>✋ Pan mode</b> (default): drag map, click green circles to inspect/remove existing trees.<br/><br/>
+        • <b>🌳 Plant mode</b>: click on empty map to plant a tree (editable, draggable, deletable).<br/><br/>
+        • <b>Horizon slider</b>: drag 5–20 years to update the scenario projection in real time.<br/><br/>
         • Species selection follows Gowanus guidelines: native, flood-tolerant species recommended; avoid overused species for diversity.<br/>
-        • This MVP uses simplified benefit formulas (placeholders) — swap to USDA/i-Tree coefficients later.
       </small>
     </div>
   </div>
@@ -565,7 +560,18 @@
       qs("healthFilter").addEventListener("change", loadExistingTrees);
       qs("minDbhFilter").addEventListener("change", loadExistingTrees);
 
-      qs("runProjection").addEventListener("click", runProjection);
+      // Horizon slider: update label and auto-run projection
+      const horizonEl = qs("horizon");
+      const horizonValueEl = qs("horizonValue");
+      function updateHorizonLabel() {
+        horizonValueEl.textContent = horizonEl.value;
+      }
+      horizonEl.addEventListener("input", () => {
+        updateHorizonLabel();
+        runProjection();
+      });
+      updateHorizonLabel();
+      runProjection(); // initial load
 
       qs("clearRemoved").addEventListener("click", () => {
         // MVP: easiest reset is just refresh the page, since removed state is in backend memory.
